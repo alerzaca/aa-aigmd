@@ -10,7 +10,7 @@
 
 set -Eeuo pipefail
 
-PROJECT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)"
+PROJECT_DIR="${PROJECT_DIR:?PROJECT_DIR was not provided by run-slurm.sh}"
 cd "$PROJECT_DIR"
 
 SCRATCH_DIR="${SCRATCH:-/net/tscratch/people/${USER:?USER is not set}}"
@@ -18,4 +18,4 @@ module load Miniconda3/25.7.0-2
 source "$(conda info --base)/etc/profile.d/conda.sh"
 conda activate "$SCRATCH_DIR/conda-envs/aa-aigmd-py312"
 
-exec bash "$PROJECT_DIR/scripts/run.sh"
+exec bash "$SCRATCH_DIR/aa-aigmd/scripts/run.sh"

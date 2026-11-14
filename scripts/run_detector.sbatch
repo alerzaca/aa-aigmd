@@ -1,13 +1,12 @@
 #!/usr/bin/env bash
-## Submitted by scripts/run-slurm.sh. Set CPU/RAM/time and add the GPU partition
-## and GRES directives required by your grant before submitting.
-#SBATCH --cpus-per-task=4
+#SBATCH --cpus-per-task=1
 #SBATCH --mem=24G
 #SBATCH --time=1:00:00
 #SBATCH --account=plgregevgauss-gpu-a100
 #SBATCH --partition=plgrid-gpu-a100
 #SBATCH --output=logs/%x_%j.out
 #SBATCH --error=logs/%x_%j.err
+#SBATCH --gres=gpu:1
 
 set -Eeuo pipefail
 

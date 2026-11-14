@@ -4,6 +4,3 @@ __pycache__/
 /data/fake/*
 /data/real/*
 /results/*
-
-src/detectors/lofcz.py
-src/detectors/deezer.py

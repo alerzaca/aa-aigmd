@@ -18,4 +18,4 @@ module load Miniconda3/25.7.0-2
 source "$(conda info --base)/etc/profile.d/conda.sh"
 conda activate "$SCRATCH_DIR/conda-envs/aa-aigmd-py312"
 
-exec bash ./scripts/run.sh
+exec bash "$PROJECT_DIR/scripts/run.sh"

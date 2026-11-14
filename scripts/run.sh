@@ -3,8 +3,9 @@
 # Data: data/fake/sonics-part1 and data/fake/sonics-part2.
 set -Eeuo pipefail
 
-SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
-PROJECT_DIR="$(cd -- "$SCRIPT_DIR/.." && pwd)"
+SCRATCH_DIR="${SCRATCH:-/net/tscratch/people/${USER:?USER is not set}}"
+PROJECT_DIR="$SCRATCH_DIR/aa-aigmd"
+SCRIPT_DIR="$PROJECT_DIR/scripts"
 cd "$PROJECT_DIR"
 
 DETECTOR="${DETECTOR:-sonics-alpha-5s}"

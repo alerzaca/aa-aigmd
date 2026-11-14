@@ -1,12 +1,13 @@
 #!/usr/bin/env bash
 set -Eeuo pipefail
 
-SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
-PROJECT_DIR="$(cd -- "$SCRIPT_DIR/.." && pwd)"
 SCRATCH_DIR="${SCRATCH:-/net/tscratch/people/${USER:?USER is not set}}"
-
 RUN_NAME="sonics_parts"
+
+PROJECT_DIR="$SCRATCH_DIR/aa-aigmd"
 DATA_DIR="$PROJECT_DIR/data"
+SCRIPT_DIR="$PROJECT_DIR/scripts"
+
 PYTHON="$SCRATCH_DIR/conda-envs/aa-aigmd-py312/bin/python"
 DETECTORS=(sonics-alpha-5s sonics-alpha-120s)
 

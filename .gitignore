@@ -1,0 +1,9 @@
+__pycache__/
+
+/documentation/*
+/data/fake/*
+/data/real/*
+/results/*
+
+src/detectors/lofcz.py
+src/detectors/deezer.py

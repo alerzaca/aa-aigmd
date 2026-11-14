@@ -3,7 +3,9 @@
 from __future__ import annotations
 
 import csv
+import hashlib
 import json
+import math
 import sys
 from dataclasses import dataclass
 from datetime import datetime
@@ -47,11 +49,79 @@ ATTACK_COLUMNS = [
 ]
 
 
-def _start_csv(path: Path, columns: list[str]) -> None:
-    ## Tworzy plik wyników i zapisuje nagłówek przed przetwarzaniem próbek.
+def _ensure_csv(path: Path, columns: list[str]) -> None:
+    ## Zachowuje zapisane wyniki przy wznowieniu i sprawdza zgodność nagłówka.
     path.parent.mkdir(parents=True, exist_ok=True)
+    if path.exists():
+        with path.open(newline="", encoding="utf-8") as file:
+            header = next(csv.reader(file), [])
+        if header:
+            if header != columns:
+                raise ValueError(f"Unexpected CSV columns in {path}: {header}")
+            with path.open("r+b") as file:
+                file.seek(0, 2)
+                end = file.tell()
+                if end:
+                    file.seek(-1, 2)
+                    if file.read(1) != b"\n":
+                        position = end - 1
+                        while position >= 0:
+                            file.seek(position)
+                            if file.read(1) == b"\n":
+                                file.truncate(position + 1)
+                                break
+                            position -= 1
+                        else:
+                            file.truncate(0)
+            if path.stat().st_size:
+                return
+
     with path.open("w", newline="", encoding="utf-8") as file:
         csv.DictWriter(file, fieldnames=columns).writeheader()
+
+
+def _is_number(value: str | None) -> bool:
+    try:
+        return value is not None and math.isfinite(float(value))
+    except ValueError:
+        return False
+
+
+def _input_manifest(files: list[Path], data_dir: Path) -> str:
+    names = sorted(path.relative_to(data_dir).as_posix() for path in files)
+    return hashlib.sha256("\0".join(names).encode("utf-8")).hexdigest()
+
+
+def _ensure_config(
+    path: Path,
+    config: dict[str, object],
+    fields: tuple[str, ...],
+    results_path: Path,
+) -> None:
+    if path.exists():
+        existing = json.loads(path.read_text(encoding="utf-8"))
+        if not isinstance(existing, dict):
+            raise ValueError(f"Invalid run configuration in {path}")
+        changed = [
+            f"{field} (saved={existing.get(field)!r}, requested={config.get(field)!r})"
+            for field in fields
+            if existing.get(field) != config.get(field)
+        ]
+        if changed:
+            raise ValueError(
+                f"Cannot resume {results_path}; run settings changed: "
+                f"{', '.join(changed)}. Use a new results directory."
+            )
+        return
+
+    if results_path.exists():
+        print(
+            f"WARNING: {path} is missing; assuming current settings match "
+            "these legacy results.",
+            file=sys.stderr,
+        )
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(config, indent=2), encoding="utf-8")
 
 
 def _append_csv_row(path: Path, row: dict, columns: list[str]) -> None:
@@ -68,6 +138,15 @@ def _check_representation(detector: Detector, representation: str) -> None:
         raise TypeError("The selected detector does not expose a mel-feature attack path")
 
 
+def _record_baseline_result(
+    group_counts: dict[str, dict[str, int]], relative_path: str, p_fake: float
+) -> None:
+    group = "/".join(relative_path.split("/")[:2])
+    counts = group_counts.setdefault(group, {"size": 0, "flagged_fake": 0})
+    counts["size"] += 1
+    counts["flagged_fake"] += int(p_fake > 0.5)
+
+
 ## ==================== Podstawowa detekcja bez ataku ====================
 
 def run_baseline(
@@ -82,8 +161,6 @@ def run_baseline(
     ## Przygotowanie przebiegu: sprawdzenie trybu, ścieżki wyniku i wejściowych plików.
     _check_representation(detector, representation)
     path = results_dir / representation / "baseline.csv"
-    if path.exists():
-        raise FileExistsError(f"Refusing to overwrite existing baseline: {path}")
     files = sorted(p for p in data_dir.rglob("*") if p.suffix.lower() in {".mp3", ".wav"})
     if not files:
         raise FileNotFoundError(f"No WAV or MP3 audio files found under {data_dir}")
@@ -99,19 +176,69 @@ def run_baseline(
             "recon_stoi",
         ]
     )
+    config = {
+        "argv": sys.argv[1:],
+        "detector": type(detector).__name__,
+        "representation": representation,
+        "reconstruction": reconstruction if representation == "mel" else None,
+        "n_files": len(files),
+        "input_manifest": _input_manifest(files, data_dir),
+        "sample_rate": meta.sample_rate,
+        "fake_label_idx": meta.fake_label_idx,
+    }
+    checkpoint = getattr(meta, "checkpoint", None)
+    if checkpoint is not None:
+        config["checkpoint"] = checkpoint
+    _ensure_config(
+        path.parent / "baseline_config.json",
+        config,
+        (
+            "detector",
+            "checkpoint",
+            "representation",
+            "reconstruction",
+            "n_files",
+            "input_manifest",
+            "sample_rate",
+            "fake_label_idx",
+        ),
+        path,
+    )
+
     errors_path = path.parent / "errors.csv"
-    _start_csv(path, baseline_columns)
-    _start_csv(errors_path, ERROR_COLUMNS)
+    _ensure_csv(path, baseline_columns)
+    _ensure_csv(errors_path, ERROR_COLUMNS)
 
     fake_label = meta.fake_label_idx if meta.fake_label_idx is not None else 1
     print(f"Found {len(files)} audio files. Starting baseline...", flush=True)
-    successful_count = 0
-    error_count = 0
+    current_files = {file.relative_to(data_dir).as_posix() for file in files}
+    completed_files = set()
     group_counts: dict[str, dict[str, int]] = {}
+    with path.open(newline="", encoding="utf-8") as file:
+        for row in csv.DictReader(file):
+            relative_path = row.get("file")
+            if (
+                relative_path not in current_files
+                or relative_path in completed_files
+                or None in row
+                or any(row.get(column) is None for column in baseline_columns)
+                or not _is_number(row.get("p_fake"))
+            ):
+                continue
+            completed_files.add(relative_path)
+            _record_baseline_result(
+                group_counts, relative_path, float(row["p_fake"])
+            )
+
+    successful_count = len(completed_files)
+    error_count = 0
     
     ## Obejmujemy zarówno real, jak i fake, bez filtrowania po decyzji modelu (której jeszcze nie ma).
     for index, file in enumerate(files, start=1):
         relative_path = file.relative_to(data_dir).as_posix()
+        if relative_path in completed_files:
+            print(f"[{index}/{len(files)}] Skipping completed {relative_path}", flush=True)
+            continue
         print(f"[{index}/{len(files)}] Processing {relative_path}", flush=True)
         try:
             ## Dekodowanie, zmiana częstotliwości próbkowania oraz dopasowanie długości.
@@ -138,11 +265,11 @@ def run_baseline(
                     row["recon_stoi"] = try_stoi(original[0], audio[0] * gain, sample_rate)
 
             _append_csv_row(path, row, baseline_columns)
+            completed_files.add(relative_path)
             successful_count += 1
-            group = "/".join(relative_path.split("/")[:2])
-            counts = group_counts.setdefault(group, {"size": 0, "flagged_fake": 0})
-            counts["size"] += 1
-            counts["flagged_fake"] += int(row["p_fake"] > 0.5)
+            _record_baseline_result(
+                group_counts, relative_path, float(row["p_fake"])
+            )
             print(f"[{index}/{len(files)}] Done {relative_path} (p_fake={row['p_fake']:.4f})", flush=True)
 
         except Exception as error:
@@ -192,36 +319,111 @@ def run_attack_sweep(
         raise ValueError(f"Attack {attack!r} is defined in waveform space only")
     representation_dir = results_dir / representation
 
-    ## Przerwij przed zapisem, jeśli nadpisałby poprzednie wyniki.
     if not (representation_dir / "baseline.csv").exists():
         raise FileNotFoundError(f"Run `baseline --representation {representation}` with this --results-dir first")
     output_dir = representation_dir / attack
     metrics_path = output_dir / "metrics.csv"
-    if output_dir.exists():
-        raise FileExistsError(f"Refusing to overwrite existing attack results: {output_dir}")
-    
-    audio_dir = output_dir / "audio"
-    audio_dir.mkdir(parents=True)
     attack_columns = ATTACK_COLUMNS.copy()
     if representation == "mel":
         attack_columns.extend(["feature_p_fake_after", "feature_linf"])
+
+    config = {
+        "argv": sys.argv[1:],
+        "time": datetime.now().isoformat(timespec="seconds"),
+        "detector": type(detector).__name__,
+        "attack": attack,
+        "representation": representation,
+        "reconstruction": reconstruction if representation == "mel" else None,
+        "budget_name": attack_entry.budget_name,
+        "budgets": budgets,
+        "alpha": alpha,
+        "steps": steps,
+        "target_label": target_label,
+        "n_files": len(files),
+        "input_manifest": _input_manifest(files, data_dir),
+        "sample_rate": meta.sample_rate,
+        "fake_label_idx": meta.fake_label_idx,
+    }
+    checkpoint = getattr(meta, "checkpoint", None)
+    if checkpoint is not None:
+        config["checkpoint"] = checkpoint
+    _ensure_config(
+        output_dir / "config.json",
+        config,
+        (
+            "detector",
+            "checkpoint",
+            "attack",
+            "representation",
+            "reconstruction",
+            "budget_name",
+            "budgets",
+            "alpha",
+            "steps",
+            "target_label",
+            "n_files",
+            "input_manifest",
+            "sample_rate",
+            "fake_label_idx",
+        ),
+        metrics_path,
+    )
+
+    output_dir.mkdir(parents=True, exist_ok=True)
+    audio_dir = output_dir / "audio"
+    audio_dir.mkdir(parents=True, exist_ok=True)
+    _ensure_csv(metrics_path, attack_columns)
+    errors_path = output_dir / "errors.csv"
+    _ensure_csv(errors_path, ERROR_COLUMNS)
+
     fake_label = meta.fake_label_idx if meta.fake_label_idx is not None else 1
     true_label = torch.tensor([fake_label], device=device)
 
     ## Metryki i błędy zapisywane po każdej próbie.
-    _start_csv(metrics_path, attack_columns)
-    errors_path = output_dir / "errors.csv"
-    _start_csv(errors_path, ERROR_COLUMNS)
-    successful_count = 0
-    error_count = 0
+    current_files = {path.relative_to(data_dir).as_posix() for path in files}
+    allowed_budgets = set(budgets)
+    completed_attempts: set[tuple[str, float]] = set()
     p_fake_sums = {budget: 0.0 for budget in budgets}
     p_fake_counts = {budget: 0 for budget in budgets}
+    with metrics_path.open(newline="", encoding="utf-8") as file:
+        for row in csv.DictReader(file):
+            relative_path = row.get("file")
+            budget_value = row.get("budget")
+            p_fake_value = row.get("p_fake_after")
+            if (
+                not isinstance(relative_path, str)
+                or not isinstance(budget_value, str)
+                or not isinstance(p_fake_value, str)
+                or None in row
+                or any(row.get(column) is None for column in attack_columns)
+                or not _is_number(budget_value)
+                or not _is_number(p_fake_value)
+            ):
+                continue
+            budget_number = float(budget_value)
+            key = (relative_path, budget_number)
+            if (
+                relative_path not in current_files
+                or budget_number not in allowed_budgets
+                or key in completed_attempts
+            ):
+                continue
+            completed_attempts.add(key)
+            p_fake_sums[budget_number] += float(p_fake_value)
+            p_fake_counts[budget_number] += 1
+
+    successful_count = len(completed_attempts)
+    error_count = 0
 
     ## Zewnętrzna pętla porównuje budżety, a wewnętrzna przetwarza po jednym pliku.
     ## Atakujemy wszystkie przekazane nagrania fake.
     for budget in budgets:
         for index, path in enumerate(files, start=1):
             rel = path.relative_to(data_dir)
+            key = (rel.as_posix(), budget)
+            if key in completed_attempts:
+                print(f"[{attack} {budget}] [{index}/{len(files)}] Skipping completed {rel.as_posix()}", flush=True)
+                continue
             print(f"[{attack} {budget}] [{index}/{len(files)}] Processing {rel.as_posix()}", flush=True)
             try:
                 ## Każda próba zaczyna się od czystego audio.
@@ -277,8 +479,6 @@ def run_attack_sweep(
 
                 ## Metryki jakości do clean_output: waveformu wejściowego albo rekonstrukcji dla ataku mel.
                 output_path = audio_dir / rel.parent / f"{rel.stem}_{budget}.wav"
-                if output_path.exists():
-                    raise FileExistsError(f"Refusing to overwrite existing audio: {output_path}")
                 row = {
                     "file": rel.as_posix(),
                     "budget": budget,
@@ -309,6 +509,7 @@ def run_attack_sweep(
                     sample_rate,
                 )
                 _append_csv_row(metrics_path, row, attack_columns)
+                completed_attempts.add(key)
                 successful_count += 1
                 p_fake_sums[budget] += p_fake_after
                 p_fake_counts[budget] += 1
@@ -331,26 +532,6 @@ def run_attack_sweep(
                 print(f"[{attack} {budget}] [{index}/{len(files)}] ERROR {rel.as_posix()}: {type(error).__name__}: {error}", flush=True)
 
     print(f"{attack} complete: {successful_count}/{len(files) * len(budgets)} succeeded, {error_count} failed. Errors: {errors_path}", flush=True)
-
-    ## Zapis konfiguracji pozwala odtworzyć ustawienia wspólne dla całego przebiegu.
-    config = {
-        "argv": sys.argv[1:],
-        "time": datetime.now().isoformat(timespec="seconds"),
-        "detector": type(detector).__name__,
-        "attack": attack,
-        "representation": representation,
-        "reconstruction": reconstruction if representation == "mel" else None,
-        "budget_name": attack_entry.budget_name,
-        "budgets": budgets,
-        "alpha": alpha,
-        "steps": steps,
-        "target_label": target_label,
-        "n_files": len(files),
-    }
-    checkpoint = getattr(meta, "checkpoint", None)
-    if checkpoint is not None:
-        config["checkpoint"] = checkpoint
-    (output_dir / "config.json").write_text(json.dumps(config, indent=2))
 
     ## CLI pokazuje średnie P(fake) per budżet, pełne wiersze są w CSV.
     mean_p_fake_by_budget = {

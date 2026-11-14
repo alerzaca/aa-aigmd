@@ -126,9 +126,16 @@ The sequence is therefore:
 check-env -> infer/check-gradient (optional) -> baseline -> attack -> report
 ```
 
-Experiment commands write raw data and refuse to overwrite existing files. The report only reads raw results and
-writes tables and figures to `<run>/report/`, it can be re-run without repeating
-the experiment. Inputs default to `data/` regardless of the working directory.
+Experiment commands resume from successful rows in their existing CSV files:
+completed baseline files and attack file/budget pairs are skipped, while missing
+or failed work is retried. Re-run a batch script with the same run name and
+options to continue after an interruption. Baseline and attack configuration
+files are checked before resuming; changed settings require a new results
+directory. When resuming older results without a configuration file, the
+current settings are recorded with a warning, so verify they match the original
+run. The report only reads raw results and writes tables and figures to
+`<run>/report/`, so it can be re-run without repeating the experiment. Inputs
+default to `data/` regardless of the working directory.
 
 ### Batch experiments
 

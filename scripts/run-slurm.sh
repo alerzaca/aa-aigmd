@@ -66,14 +66,6 @@ for part in sonics-part1 sonics-part2; do
     }
 done
 
-for detector in "${DETECTORS[@]}"; do
-    results_dir="$PROJECT_DIR/results/$detector/$RUN_NAME"
-    [[ ! -e "$results_dir" ]] || {
-        echo "Results already exist; change RUN_NAME: $results_dir" >&2
-        exit 1
-    }
-done
-
 mkdir -p "$PROJECT_DIR/results"
 for detector in "${DETECTORS[@]}"; do
     DETECTOR="$detector" RUN_NAME="$RUN_NAME" DATA_DIR="$DATA_DIR" PYTHON="$PYTHON" \

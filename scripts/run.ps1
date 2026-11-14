@@ -37,17 +37,12 @@ try {
         Select-Object -First 1
     if (-not $sample) { throw "No WAV/MP3 files under $DataDir\fake" }
 
-    foreach ($detector in $Detectors) {
-        $results = Join-Path $ProjectRoot "results\$detector\$RunName"
-        if (Test-Path -LiteralPath $results) { throw "Results already exist: $results" }
-    }
-
     Invoke-App @('check-env')
     New-Item -ItemType Directory -Path (Join-Path $ProjectRoot 'results') -Force | Out-Null
     foreach ($detector in $Detectors) {
         $results = Join-Path $ProjectRoot "results\$detector\$RunName"
         New-Item -ItemType Directory -Path (Split-Path $results) -Force | Out-Null
-        New-Item -ItemType Directory -Path $results | Out-Null
+        New-Item -ItemType Directory -Path $results -Force | Out-Null
         $common = @('--detector', $detector, '--data-dir', $DataDir, '--results-dir', $results)
 
         Invoke-App (@('infer', '--detector', $detector, '--sample-file', $sample.FullName))

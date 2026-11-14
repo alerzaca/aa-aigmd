@@ -27,7 +27,6 @@ for part in sonics-part1 sonics-part2; do
 done
 
 SAMPLE="$(find "$DATA_DIR/fake" -type f \( -iname '*.wav' -o -iname '*.mp3' \) -print -quit)"
-[[ ! -e "$RESULTS_DIR" ]] || { echo "Results already exist: $RESULTS_DIR" >&2; exit 1; }
 
 run() { "$PYTHON" -m src.main "$@"; }
 common=(--detector "$DETECTOR" --data-dir "$DATA_DIR" --results-dir "$RESULTS_DIR")
